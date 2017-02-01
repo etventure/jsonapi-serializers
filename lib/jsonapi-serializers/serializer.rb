@@ -3,6 +3,36 @@ require 'active_support/inflector'
 
 module JSONAPI
   module Serializer
+    class Store
+      include Singleton
+
+      attr_accessor :serializer
+
+      def initialize
+        self.serializer = {}
+      end
+
+      def serializer_class(object, options)
+        serializer[object.class.name] ||= {}
+        serializer[object.class.name][object.id] ||= find_serializer_class(object, options)
+      end
+
+      private
+
+      def find_serializer_class_name(object, options)
+        return "#{options[:namespace]}::#{object.class.name}Serializer" if options[:namespace]
+        return object.jsonapi_serializer_class_name.to_s if object.respond_to?(:jsonapi_serializer_class_name)
+
+        "#{object.class.name}Serializer"
+      end
+
+      def find_serializer_class(object, options)
+        class_name = find_serializer_class_name(object, options)
+        class_name.constantize
+      end
+    end
+
+
     def self.included(target)
       target.send(:include, InstanceMethods)
       target.extend ClassMethods
@@ -226,23 +256,12 @@ module JSONAPI
       protected :evaluate_attr_or_block
     end
 
-    def self.find_serializer_class_name(object, options)
-      if options[:namespace]
-        return "#{options[:namespace]}::#{object.class.name}Serializer"
-      end
-      if object.respond_to?(:jsonapi_serializer_class_name)
-        return object.jsonapi_serializer_class_name.to_s
-      end
-      "#{object.class.name}Serializer"
-    end
-
     def self.find_serializer_class(object, options)
-      class_name = find_serializer_class_name(object, options)
-      class_name.constantize
+      JSONAPI::Serializer::Store.instance.serializer_class(object, options)
     end
 
     def self.find_serializer(object, options)
-      find_serializer_class(object, options).new(object, options)
+      JSONAPI::Serializer::Store.instance.serializer_class(object, options).new(object, options)
     end
 
     def self.serialize(objects, options = {})
@@ -353,6 +372,7 @@ module JSONAPI
           included_passthrough_options[:serializer] = find_serializer_class(data[:object], options)
           included_passthrough_options[:namespace] = passthrough_options[:namespace]
           included_passthrough_options[:include_linkages] = data[:include_linkages]
+          included_passthrough_options[:include_relationships] = options[:include_data_with_relationships].present?
           serialize_primary(data[:object], included_passthrough_options)
         end
       end
@@ -410,11 +430,15 @@ module JSONAPI
       # Call the methods once now to avoid calling them twice when evaluating the if's below.
       attributes = serializer.attributes
       links = serializer.links
+
+      data['attributes'] = attributes if !attributes.empty?
+      data['links'] = links if !links.empty?
+
+      return data if options[:include_relationships]
+
       relationships = serializer.relationships
       jsonapi = serializer.jsonapi
       meta = serializer.meta
-      data['attributes'] = attributes if !attributes.empty?
-      data['links'] = links if !links.empty?
       data['relationships'] = relationships if !relationships.empty?
       data['jsonapi'] = jsonapi if !jsonapi.nil?
       data['meta'] = meta if !meta.nil?
